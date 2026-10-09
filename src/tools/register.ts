@@ -7,7 +7,6 @@ import { registerGuildTools } from "./guilds.js";
 import { registerMemberTools } from "./members.js";
 import { registerMessageTools } from "./messages.js";
 import { registerPinTools } from "./pins.js";
-import { registerReactionTools } from "./reactions.js";
 import { registerSearchTools } from "./search.js";
 import { registerThreadTools } from "./threads.js";
 
@@ -21,7 +20,6 @@ export function registerAllTools(
   registerSearchTools(server, client);
   registerFindTools(server, client);
   registerDMTools(server, client);
-  registerReactionTools(server, client);
   registerPinTools(server, client);
   registerThreadTools(server, client);
   registerMemberTools(server, client);

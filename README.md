@@ -4,6 +4,14 @@ Discord MCP server using **user tokens**. No bot setup, no Developer Portal, no 
 
 Built for [Claude Code](https://claude.com/claude-code) and any MCP-compatible client.
 
+## This fork
+
+Read-only fork of [olivier-motium/discord-user-mcp](https://github.com/olivier-motium/discord-user-mcp):
+
+- No write tools. Sending messages and DMs, editing, deleting and reactions were removed, and the client can only issue `GET` requests.
+- One request at a time, at least one second apart.
+- `DISCORD_TOKEN_FILE` reads the token from a file, so it stays out of the MCP client config.
+
 ## Why user tokens?
 
 Every other Discord MCP server requires creating a bot application, configuring intents, and inviting the bot to your server. This one uses your existing Discord session — the same access you already have in the app.
@@ -43,49 +51,35 @@ npm install
 npm run build
 ```
 
-## Tools (14)
-
-### Core
+## Tools (11, all read-only)
 
 | Tool | Description |
 |------|-------------|
 | `discord_list_guilds` | List servers you're in |
+| `discord_guild_info` | Server details, roles, features |
 | `discord_list_channels` | List channels grouped by category |
 | `discord_read_messages` | Read channel history with pagination |
-| `discord_send_message` | Send a message, optionally as a reply |
 | `discord_search` | **Search messages** by content, author, channel, date, attachment type |
-
-### Essential
-
-| Tool | Description |
-|------|-------------|
-| `discord_list_dms` | List DM conversations |
-| `discord_send_dm` | Send a DM (by user ID or channel ID) |
-| `discord_react` | Add emoji reaction to a message |
+| `discord_find_message` | Find messages by author, content or date, with a channel scan fallback |
+| `discord_get_replies` | Replies to a given message |
 | `discord_pinned_messages` | Get pinned messages from a channel |
-| `discord_list_threads` | List active threads in a server |
-| `discord_guild_info` | Server details, roles, features |
-
-### Additional
-
-| Tool | Description |
-|------|-------------|
-| `discord_edit_message` | Edit your own message |
-| `discord_delete_message` | Delete your own message |
+| `discord_list_threads` | List archived threads in a server |
+| `discord_list_dms` | List DM conversations |
 | `discord_user_info` | User profile with server roles |
 
 ## Configuration
 
 | Environment Variable | Required | Description |
 |---------------------|----------|-------------|
-| `DISCORD_TOKEN` | Yes | Your Discord user token |
+| `DISCORD_TOKEN` | One of the two | Your Discord user token |
+| `DISCORD_TOKEN_FILE` | One of the two | Path to a file that contains only the token |
 | `DISCORD_DEFAULT_GUILD` | No | Default server ID — tools that need a guild will use this when not specified |
 
 ## Design choices
 
 - **Plain text output** — no raw JSON. Messages formatted as `[2024-01-15 14:32] alice: content`. IDs always inline for tool chaining.
 - **No discord.js** — raw `fetch` against Discord API v10. Zero runtime deps beyond MCP SDK.
-- **Rate limit handling** — automatic retry with `retry_after` + jitter, up to 3 attempts.
+- **Rate limit handling** — one request per second, automatic retry with `retry_after` + jitter, up to 3 attempts.
 - **Search is the star** — accepts usernames (resolved to IDs internally), date strings (`YYYY-MM-DD` converted to snowflakes), and all Discord search filters.
 - **Conservative defaults** — 25 messages per read, not 100. Keeps output manageable for AI.
 

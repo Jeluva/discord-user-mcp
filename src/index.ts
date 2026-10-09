@@ -1,14 +1,28 @@
 #!/usr/bin/env node
 
+import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { DiscordClient } from "./client.js";
 import { registerAllTools } from "./tools/register.js";
 
+// DISCORD_TOKEN_FILE keeps the token out of the MCP client config.
+function readToken(): string | undefined {
+  if (process.env.DISCORD_TOKEN) return process.env.DISCORD_TOKEN;
+  const file = process.env.DISCORD_TOKEN_FILE;
+  if (!file) return undefined;
+  try {
+    return readFileSync(file, "utf8").trim() || undefined;
+  } catch {
+    console.error(`discord-mcp: could not read DISCORD_TOKEN_FILE (${file}).`);
+    return undefined;
+  }
+}
+
 async function main() {
-  const token = process.env.DISCORD_TOKEN;
+  const token = readToken();
   if (!token) {
-    console.error("DISCORD_TOKEN environment variable is required.");
+    console.error("DISCORD_TOKEN or DISCORD_TOKEN_FILE is required.");
     console.error(
       "This is your Discord USER token (not a bot token).",
     );
