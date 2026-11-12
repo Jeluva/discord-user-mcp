@@ -34,7 +34,12 @@ export class DiscordClient {
   constructor(private token: string) {}
 
   private get<T>(path: string): Promise<T> {
-    const run = this.chain.then(() => this.fetchWithRetry<T>(path));
+    return this.send<T>("GET", path);
+  }
+
+  // Only sendMessage may use a non-GET method (POST /channels/{id}/messages).
+  private send<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+    const run = this.chain.then(() => this.fetchWithRetry<T>(method, path, body));
     this.chain = run.catch(() => {});
     return run;
   }
@@ -45,15 +50,17 @@ export class DiscordClient {
     this.lastRequestAt = Date.now();
   }
 
-  private async fetchWithRetry<T>(path: string): Promise<T> {
+  private async fetchWithRetry<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
     for (let attempt = 0; attempt < 3; attempt++) {
       await this.pace();
       const res = await fetch(`${this.baseUrl}${path}`, {
-        method: "GET",
+        method,
         headers: {
           Authorization: this.token,
           "User-Agent": "DiscordBot (discord-user-mcp, 0.1.0)",
+          ...(body ? { "Content-Type": "application/json" } : {}),
         },
+        body: body ? JSON.stringify(body) : undefined,
       });
 
       if (res.status === 429) {
@@ -79,6 +86,16 @@ export class DiscordClient {
 
     throw new DiscordAPIError(429, {
       message: "Rate limited after 3 retries. Try again shortly.",
+    });
+  }
+
+  // ── Send (the only write) ──
+
+  sendMessage(channelId: string, content: string, replyTo?: string): Promise<Message> {
+    return this.send("POST", `/channels/${channelId}/messages`, {
+      content,
+      nonce: String(Date.now()),
+      ...(replyTo ? { message_reference: { message_id: replyTo } } : {}),
     });
   }
 
