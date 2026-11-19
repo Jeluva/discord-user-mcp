@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { DiscordClient } from "./client.js";
@@ -32,17 +34,21 @@ async function main() {
     process.exit(1);
   }
 
-  const client = new DiscordClient(token);
+  const tokenFile = process.env.DISCORD_TOKEN_FILE;
+  const client = new DiscordClient(token, {
+    stateDir:
+      process.env.DISCORD_STATE_DIR ||
+      (tokenFile ? dirname(tokenFile) : join(homedir(), ".discord-mcp")),
+    dailyLimit: Number(process.env.DISCORD_DAILY_LIMIT || 40),
+    dailySends: Number(process.env.DISCORD_DAILY_SENDS || 1),
+    allowSend: process.env.DISCORD_ALLOW_SEND === "1",
+  });
 
-  // Validate token on startup
-  try {
-    const me = await client.getCurrentUser();
-    console.error(`discord-mcp: authenticated as ${me.username}`);
-  } catch {
-    console.error(
-      "discord-mcp: failed to authenticate. Check your DISCORD_TOKEN.",
-    );
-    process.exit(1);
+  // No token check on startup: every Claude session spawns this server, and a
+  // GET /users/@me per session was most of the traffic. The first real call
+  // fails clearly if the token is bad.
+  if (client.isDisabled()) {
+    console.error(`discord-mcp: kill switch on (${client.killSwitchPath}), every call will be refused.`);
   }
 
   const server = new McpServer({
@@ -50,7 +56,7 @@ async function main() {
     version: "0.1.0",
   });
 
-  registerAllTools(server, client);
+  registerAllTools(server, client, process.env.DISCORD_ALLOW_SEND === "1");
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

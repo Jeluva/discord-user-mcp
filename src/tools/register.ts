@@ -13,10 +13,11 @@ import { registerThreadTools } from "./threads.js";
 export function registerAllTools(
   server: McpServer,
   client: DiscordClient,
+  allowSend = false,
 ): void {
   registerGuildTools(server, client);
   registerChannelTools(server, client);
-  registerMessageTools(server, client);
+  registerMessageTools(server, client, allowSend);
   registerSearchTools(server, client);
   registerFindTools(server, client);
   registerDMTools(server, client);

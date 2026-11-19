@@ -7,6 +7,7 @@ import { toolResult } from "./helpers.js";
 export function registerMessageTools(
   server: McpServer,
   client: DiscordClient,
+  allowSend = false,
 ): void {
   server.tool(
     "discord_read_messages",
@@ -41,6 +42,9 @@ export function registerMessageTools(
       return toolResult(formatMessageList(messages, { showPagination: true }));
     },
   );
+
+  // The send tool only exists when DISCORD_ALLOW_SEND=1.
+  if (!allowSend) return;
 
   server.tool(
     "discord_send_message",

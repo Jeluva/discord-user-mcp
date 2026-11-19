@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type {
   Channel,
   Guild,
@@ -22,16 +24,114 @@ export class DiscordAPIError extends Error {
   }
 }
 
-// Read-only fork: the client can only issue GET requests, one at a time and at
-// least MIN_GAP_MS apart, so the account never writes and reads at a human pace.
-const MIN_GAP_MS = 1000;
+// Guarded fork. The account got disabled on 2026-11-18 right after a POST from
+// a datacenter IP, so every request now goes through these limits:
+// - one request at a time, MIN_GAP_MS plus jitter apart;
+// - a daily budget persisted on disk (DISCORD_DAILY_LIMIT, default 40);
+// - sends only when DISCORD_ALLOW_SEND=1, at most DISCORD_DAILY_SENDS a day (default 1);
+// - a kill switch file (DISABLED next to the token): if it exists nothing is sent
+//   to Discord, and any 401 or account-level 403 creates it automatically;
+// - no retries on 429: the call fails and the caller stops.
+const MIN_GAP_MS = 3000;
+const JITTER_MS = 2000;
+
+export interface GuardOptions {
+  stateDir: string;
+  dailyLimit: number;
+  dailySends: number;
+  allowSend: boolean;
+}
+
+interface Usage {
+  date: string;
+  requests: number;
+  sends: number;
+}
 
 export class DiscordClient {
   private baseUrl = "https://discord.com/api/v10";
   private chain: Promise<unknown> = Promise.resolve();
   private lastRequestAt = 0;
 
-  constructor(private token: string) {}
+  constructor(
+    private token: string,
+    private guard: GuardOptions,
+  ) {}
+
+  get killSwitchPath(): string {
+    return join(this.guard.stateDir, "DISABLED");
+  }
+
+  isDisabled(): boolean {
+    return existsSync(this.killSwitchPath);
+  }
+
+  private trip(reason: string): void {
+    try {
+      mkdirSync(this.guard.stateDir, { recursive: true });
+      writeFileSync(
+        this.killSwitchPath,
+        `${new Date().toISOString()} ${reason}\nBorrar este archivo solo despues de revisar la cuenta.\n`,
+      );
+    } catch {
+      // best effort
+    }
+    console.error(`discord-mcp: kill switch on (${reason}).`);
+  }
+
+  private usagePath(): string {
+    return join(this.guard.stateDir, "usage.json");
+  }
+
+  private readUsage(): Usage {
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+      const u = JSON.parse(readFileSync(this.usagePath(), "utf8")) as Usage;
+      if (u.date === today) return u;
+    } catch {
+      // first use today
+    }
+    return { date: today, requests: 0, sends: 0 };
+  }
+
+  private writeUsage(u: Usage): void {
+    try {
+      mkdirSync(this.guard.stateDir, { recursive: true });
+      writeFileSync(this.usagePath(), JSON.stringify(u));
+    } catch {
+      // best effort
+    }
+  }
+
+  // Checks the kill switch and the budgets, then books the request.
+  private admit(method: "GET" | "POST"): void {
+    if (this.isDisabled()) {
+      throw new DiscordAPIError(0, {
+        message: `Discord MCP deshabilitado (existe ${this.killSwitchPath}). No se hizo ninguna llamada.`,
+      });
+    }
+    const u = this.readUsage();
+    if (u.requests >= this.guard.dailyLimit) {
+      throw new DiscordAPIError(0, {
+        message: `Tope diario de ${this.guard.dailyLimit} llamadas a Discord alcanzado. Seguir manana.`,
+      });
+    }
+    if (method === "POST") {
+      if (!this.guard.allowSend) {
+        throw new DiscordAPIError(0, {
+          message: "Enviar esta apagado (DISCORD_ALLOW_SEND no es 1). Pasale el texto a Jero para que lo mande el.",
+        });
+      }
+      if (u.sends >= this.guard.dailySends) {
+        throw new DiscordAPIError(0, {
+          message: `Tope diario de ${this.guard.dailySends} mensajes alcanzado.`,
+        });
+      }
+      u.sends++;
+    }
+    u.requests++;
+    this.writeUsage(u);
+  }
 
   private get<T>(path: string): Promise<T> {
     return this.send<T>("GET", path);
@@ -39,54 +139,46 @@ export class DiscordClient {
 
   // Only sendMessage may use a non-GET method (POST /channels/{id}/messages).
   private send<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
-    const run = this.chain.then(() => this.fetchWithRetry<T>(method, path, body));
+    const run = this.chain.then(() => this.fetchOnce<T>(method, path, body));
     this.chain = run.catch(() => {});
     return run;
   }
 
   private async pace(): Promise<void> {
-    const wait = this.lastRequestAt + MIN_GAP_MS - Date.now();
+    const gap = MIN_GAP_MS + Math.random() * JITTER_MS;
+    const wait = this.lastRequestAt + gap - Date.now();
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     this.lastRequestAt = Date.now();
   }
 
-  private async fetchWithRetry<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
-    for (let attempt = 0; attempt < 3; attempt++) {
-      await this.pace();
-      const res = await fetch(`${this.baseUrl}${path}`, {
-        method,
-        headers: {
-          Authorization: this.token,
-          "User-Agent": "DiscordBot (discord-user-mcp, 0.1.0)",
-          ...(body ? { "Content-Type": "application/json" } : {}),
-        },
-        body: body ? JSON.stringify(body) : undefined,
-      });
-
-      if (res.status === 429) {
-        const data = (await res.json().catch(() => ({}))) as {
-          retry_after?: number;
-        };
-        const wait = ((data.retry_after ?? 1) * 1000) + Math.random() * 100;
-        console.error(`Rate limited, retrying in ${Math.round(wait)}ms...`);
-        await new Promise((r) => setTimeout(r, wait));
-        continue;
-      }
-
-      if (!res.ok) {
-        const error = (await res.json().catch(() => ({}))) as Record<
-          string,
-          unknown
-        >;
-        throw new DiscordAPIError(res.status, error);
-      }
-
-      return (await res.json()) as T;
-    }
-
-    throw new DiscordAPIError(429, {
-      message: "Rate limited after 3 retries. Try again shortly.",
+  private async fetchOnce<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+    this.admit(method);
+    await this.pace();
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method,
+      headers: {
+        Authorization: this.token,
+        "User-Agent": "DiscordBot (discord-user-mcp, 0.1.0)",
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
     });
+
+    if (res.ok) return (await res.json()) as T;
+
+    const error = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    const code = Number(error.code ?? 0);
+    // 401 = token invalid or account disabled. 40001/40002/40003 = unauthorized,
+    // unverified or rate-limited account. Stop for good instead of insisting.
+    if (res.status === 401 || [40001, 40002, 40003].includes(code)) {
+      this.trip(`HTTP ${res.status} code ${code} on ${method} ${path.split("?")[0]}`);
+    }
+    if (res.status === 429) {
+      throw new DiscordAPIError(429, {
+        message: "Discord limito las llamadas (429). No se reintenta: parar y seguir otro dia.",
+      });
+    }
+    throw new DiscordAPIError(res.status, error);
   }
 
   // ── Send (the only write) ──
